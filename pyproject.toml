@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-zero-prompt"
+version = "0.1.0"
+description = "Zero-Prompt Task Inference Environment for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core[core]>=0.2.2",
+    "fastapi>=0.115.0",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.24.0",
+    "requests>=2.31.0",
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+server = "zero_prompt_env.server.app:main"
+
+[tool.setuptools]
+packages = ["zero_prompt_env", "zero_prompt_env.server", "zero_prompt_env.tasks"]
+
+[tool.setuptools.package-dir]
+"zero_prompt_env" = "."
+"zero_prompt_env.server" = "server"
+"zero_prompt_env.tasks" = "tasks"
