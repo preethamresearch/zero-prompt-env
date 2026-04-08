@@ -22,7 +22,7 @@ app = create_app(
 def root():
     return {
         "name": "zero_prompt_env",
-        "description": "Zero-Prompt Task Inference Environment — agents must infer tasks with no instructions",
+        "description": "Zero-Prompt Task Inference Environment - agents must infer tasks with no instructions",
         "tasks": ["format_inference", "intent_classification", "multi_step_composition"],
         "endpoints": ["/reset", "/step", "/state", "/health", "/schema", "/docs"],
     }
