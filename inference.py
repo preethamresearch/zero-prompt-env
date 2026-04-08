@@ -15,7 +15,6 @@ STDOUT FORMAT
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 """
 
-import asyncio
 import json
 import os
 import sys
