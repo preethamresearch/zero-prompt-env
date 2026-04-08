@@ -177,8 +177,9 @@ async def run_task_docker(task: dict, seed: int = 42) -> tuple:
             if done:
                 break
 
-        score = max(rewards) if rewards else 0.0
-        score = min(max(score, 0.0), 1.0)
+        # Clamp score strictly within (0, 1) — validator rejects 0.0 and 1.0
+        score = max(rewards) if rewards else 0.01
+        score = max(0.01, min(0.99, score))
         success = score >= 0.9
 
     except Exception as exc:
@@ -233,8 +234,9 @@ def run_task_local(task: dict, seed: int = 42) -> tuple:
             if done:
                 break
 
-        score = max(rewards) if rewards else 0.0
-        score = min(max(score, 0.0), 1.0)
+        # Clamp score strictly within (0, 1) — validator rejects 0.0 and 1.0
+        score = max(rewards) if rewards else 0.01
+        score = max(0.01, min(0.99, score))
         success = score >= 0.9
 
     except Exception as exc:

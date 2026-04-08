@@ -131,7 +131,7 @@ class ZeroPromptEnvironment(
                 input_data=None,
                 feedback="Environment not initialized. Call reset() first.",
                 done=True,
-                reward=0.0,
+                reward=0.01,
             )
 
         self._state.step_count += 1
@@ -170,7 +170,9 @@ class ZeroPromptEnvironment(
         self, score: float, feedback: str, response_text: str
     ) -> ZeroPromptObservation:
         """Record results and build the observation."""
+        # Clamp score to strictly within (0, 1) — validator rejects 0.0 and 1.0
         score = round(score, 2)
+        score = max(0.01, min(0.99, score))
         self._rewards.append(score)
         self._state.total_reward += score
 
