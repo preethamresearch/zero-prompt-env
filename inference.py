@@ -1,20 +1,20 @@
 """
-Inference Script — Zero-Prompt Task Inference Environment
+Inference Script - Zero-Prompt Task Inference Environment
 ===================================
-MANDATORY
-- Before submitting, ensure the following variables are defined in your environment configuration:
+MANDATORY ENVIRONMENT VARIABLES:
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
     HF_TOKEN       Your Hugging Face / API key.
+OPTIONAL:
+    LOCAL_IMAGE_NAME   Docker image name (when using from_docker_image).
 
-STDOUT FORMAT
-- The script must emit exactly three line types to stdout, in this order:
-
+STDOUT FORMAT:
     [START] task=<task_name> env=<benchmark> model=<model_name>
     [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -23,22 +23,23 @@ from typing import List, Optional
 
 from openai import OpenAI
 
+from client import ZeroPromptClient
 from models import ZeroPromptAction, ZeroPromptObservation
-from server.zero_prompt_environment import ZeroPromptEnvironment
 
 # --- Environment Variables ---
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "zero-prompt-env")
 
 if HF_TOKEN is None:
     raise ValueError("HF_TOKEN environment variable is required")
 
 # --- OpenAI Client ---
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
 BENCHMARK = "zero_prompt_env"
-MAX_STEPS = 3  # Max attempts per task
+MAX_STEPS = 3
 
 # --- Task Definitions ---
 TASKS = [
@@ -58,7 +59,6 @@ def log_step(
 ) -> None:
     error_val = error if error else "null"
     done_val = str(done).lower()
-    # Ensure action is single-line
     action_clean = action.replace("\n", " ").replace("\r", "")
     print(
         f"[STEP] step={step} action={action_clean} "
@@ -78,15 +78,17 @@ def log_end(
     )
 
 
-def build_prompt(obs: ZeroPromptObservation) -> str:
-    """Build a prompt for the LLM based on the observation.
+def build_prompt(obs_data: dict) -> str:
+    """Build a prompt for the LLM based on the observation data.
 
-    The key design: we give the model the raw input with minimal guidance.
-    The model must infer the correct transformation and output format.
+    Minimal guidance - the agent must infer the task from context.
     """
+    input_data = obs_data.get("input_data")
+    examples = obs_data.get("examples", [])
+    feedback = obs_data.get("feedback", "")
+
     parts = []
 
-    # Minimal guidance — the agent must infer the task from context
     parts.append(
         "You are given raw input data with no instructions. "
         "Infer what transformation or action is needed and produce the output.\n"
@@ -94,26 +96,26 @@ def build_prompt(obs: ZeroPromptObservation) -> str:
         "Output plain text when the input is plain text.\n"
     )
 
-    if obs.examples:
+    if examples:
         parts.append("Examples:\n")
-        for ex in obs.examples:
+        for ex in examples:
             parts.append(f"  Input:  {ex['input']}")
             parts.append(f"  Output: {ex['output']}\n")
         parts.append("Now process this input:")
 
     formatted = (
-        json.dumps(obs.input_data, indent=2)
-        if isinstance(obs.input_data, (dict, list))
-        else str(obs.input_data)
+        json.dumps(input_data, indent=2)
+        if isinstance(input_data, (dict, list))
+        else str(input_data)
     )
     parts.append(f"Input:\n{formatted}")
 
-    if obs.feedback:
-        parts.append(f"\nYour previous attempt was wrong. Feedback: {obs.feedback}")
+    if feedback:
+        parts.append(f"\nYour previous attempt was wrong. Feedback: {feedback}")
         parts.append("Adjust your approach based on this feedback.")
 
     parts.append(
-        "\nRespond with ONLY the output — no explanation, no markdown, "
+        "\nRespond with ONLY the output - no explanation, no markdown, "
         "no code fences, no extra text. Just the raw output."
     )
     return "\n".join(parts)
@@ -122,7 +124,7 @@ def build_prompt(obs: ZeroPromptObservation) -> str:
 def call_llm(prompt: str) -> str:
     """Call the LLM and return the response text."""
     try:
-        response = client.chat.completions.create(
+        response = llm_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
@@ -131,12 +133,70 @@ def call_llm(prompt: str) -> str:
         text = (response.choices[0].message.content or "").strip()
         return text if text else "error: empty response"
     except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", flush=True)
-        return "error: model request failed"
+        return f"error: {exc}"
 
 
-def run_task(task: dict, seed: int = 42) -> tuple:
-    """Run a single task episode. Returns (success, steps, score, rewards)."""
+async def run_task_docker(task: dict, seed: int = 42) -> tuple:
+    """Run a single task against the Docker environment via client."""
+    task_name = task["name"]
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
+
+    try:
+        env = await ZeroPromptClient.from_docker_image(LOCAL_IMAGE_NAME)
+
+        result = await env.reset(seed=seed, task_name=task_name)
+        obs_data = result.observation.model_dump() if hasattr(result, "observation") else result.model_dump()
+
+        for step in range(1, MAX_STEPS + 1):
+            done = obs_data.get("done", False)
+            if done:
+                break
+
+            prompt = build_prompt(obs_data)
+            llm_response = call_llm(prompt)
+
+            action = ZeroPromptAction(response=llm_response)
+            result = await env.step(action)
+
+            obs_data = result.observation.model_dump() if hasattr(result, "observation") else result.model_dump()
+            reward = float(obs_data.get("reward", 0.0) or 0.0)
+            done = obs_data.get("done", False)
+            feedback = obs_data.get("feedback", "")
+            error = feedback if feedback else None
+
+            rewards.append(reward)
+            steps_taken = step
+
+            log_step(step=step, action=llm_response, reward=reward, done=done, error=error)
+
+            if done:
+                break
+
+        score = max(rewards) if rewards else 0.0
+        score = min(max(score, 0.0), 1.0)
+        success = score >= 0.9
+
+    except Exception as exc:
+        steps_taken += 1
+        rewards.append(0.0)
+        log_step(step=steps_taken, action="error", reward=0.0, done=True, error=str(exc))
+        traceback.print_exc(file=sys.stderr)
+
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return success, steps_taken, score, rewards
+
+
+def run_task_local(task: dict, seed: int = 42) -> tuple:
+    """Run a single task using the environment directly (no Docker)."""
+    from server.zero_prompt_environment import ZeroPromptEnvironment
+
     task_name = task["name"]
     rewards: List[float] = []
     steps_taken = 0
@@ -154,7 +214,8 @@ def run_task(task: dict, seed: int = 42) -> tuple:
             if obs.done:
                 break
 
-            prompt = build_prompt(obs)
+            obs_data = obs.model_dump()
+            prompt = build_prompt(obs_data)
             llm_response = call_llm(prompt)
 
             action = ZeroPromptAction(response=llm_response)
@@ -167,15 +228,11 @@ def run_task(task: dict, seed: int = 42) -> tuple:
             rewards.append(reward)
             steps_taken = step
 
-            log_step(
-                step=step, action=llm_response, reward=reward,
-                done=done, error=error,
-            )
+            log_step(step=step, action=llm_response, reward=reward, done=done, error=error)
 
             if done:
                 break
 
-        # Score = max reward achieved (best attempt), clamped to [0, 1]
         score = max(rewards) if rewards else 0.0
         score = min(max(score, 0.0), 1.0)
         success = score >= 0.9
@@ -183,10 +240,7 @@ def run_task(task: dict, seed: int = 42) -> tuple:
     except Exception as exc:
         steps_taken += 1
         rewards.append(0.0)
-        log_step(
-            step=steps_taken, action="error", reward=0.0,
-            done=True, error=str(exc),
-        )
+        log_step(step=steps_taken, action="error", reward=0.0, done=True, error=str(exc))
         traceback.print_exc(file=sys.stderr)
 
     finally:
@@ -199,11 +253,22 @@ def run_task(task: dict, seed: int = 42) -> tuple:
     return success, steps_taken, score, rewards
 
 
-def main():
-    """Run baseline inference across all tasks."""
+async def main_docker():
+    """Run baseline inference via Docker container."""
     for task in TASKS:
-        run_task(task)
+        await run_task_docker(task)
+
+
+def main_local():
+    """Run baseline inference locally (direct import)."""
+    for task in TASKS:
+        run_task_local(task)
 
 
 if __name__ == "__main__":
-    main()
+    # Use Docker client if LOCAL_IMAGE_NAME is explicitly set in env,
+    # otherwise fall back to direct local execution
+    if os.getenv("LOCAL_IMAGE_NAME"):
+        asyncio.run(main_docker())
+    else:
+        main_local()

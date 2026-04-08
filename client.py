@@ -2,7 +2,7 @@
 
 from typing import Any, Dict
 
-from openenv.core.env_client.env_client import EnvClient, StepResult
+from openenv.core.env_client import EnvClient, StepResult
 
 try:
     from .models import ZeroPromptAction, ZeroPromptObservation, ZeroPromptState
